@@ -9,7 +9,7 @@ from twisted.internet import reactor, protocol
 from twisted.python import log
 import sys
 import os
-import json
+import argparse
 
 class ForwardclientProtocol(protocol.Protocol):
 
@@ -24,7 +24,6 @@ class ForwardclientProtocol(protocol.Protocol):
         self.buffer += data
 
     def SendData(self, data):
-        #print 'forward client:recv data size %d'%len(data)
         self.transport.write(data)
 
     def connectionLost(self, reason):
@@ -112,18 +111,8 @@ class TunClientFactory(protocol.ReconnectingClientFactory):
         if self.forward is False:
             protocol.ReconnectingClientFactory.clientConnectionFailed(self, connector, reason)
 
-def ip_to_bin(ip):
-    return ''.join([chr(int(i)) for i in ip.split('.')])
-
 def bin_to_ip(bstr):
     return '.'.join([str(ord(i)) for i in list(bstr)])
-
-def int_to_bin(n):
-    n = int(n)
-    if n/256 == 0:
-        return chr(n)
-    else:
-        return int_to_bin(n/256) + chr(n%256)
 
 def bin_to_int(bstr):
     l = len(bstr)
@@ -132,27 +121,29 @@ def bin_to_int(bstr):
     else:
         return ord(bstr[0])*256**(l-1) + bin_to_int(bstr[1::])
 
-def main():
-    reactor.connectTCP(server_ip, server_port, TunClientFactory())
+def start(server_host, server_port):
+    reactor.connectTCP(server_host, server_port, TunClientFactory())
     reactor.run()
 
-if __name__ == '__main__':
-    server_ip = '172.93.42.182'
-    tunnel = {}
-    deamon = True if '-d' in sys.argv else False
-    config = sys.argv[sys.argv.index('-c')+1]
+def main(deamon=False, server_host='', server_port=None, logfile='/var/log/portmat_client.log'):
     if deamon:
         p = os.fork()
-        log.startLogging(open('/home/lieh/forward.log','a+'))
+        if p == 0:
+            log.startLogging(open(logfile, 'a+'))
+            start(server_host, server_port)
     else:
-        p = os.getpid()
         log.startLogging(sys.stdout)
-    if os.path.exists(config):
-        cfg = json.load(open(config,'r'))
+        start(server_host, server_port)
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Passive portmap')
+    parser.add_argument('--host', help='server host')
+    parser.add_argument('--port', type=int, default=12300, help='server port, defalut 12300')
+    parser.add_argument('--logfile', default='/var/log/portmap_client.log', help='log file path, default /var/log/portmap_client.log')
+    parser.add_argument('--deamon', action='store_true', help='starting in deamon')
+    args = parser.parse_args()
+    server_ip = args.host
+    if args.host == None:
+        parser.print_help()
     else:
-        print 'can\'t found config file'
-        sys.exit(1)
-    server_ip = cfg['server_ip']
-    server_port = int(cfg['server_port'])
-    if (deamon is False) or (p == 0):
-        main()
+        main(deamon=args.deamon, server_host=args.host, server_port=args.port, logfile=args.logfile)

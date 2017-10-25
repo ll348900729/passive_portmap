@@ -10,6 +10,7 @@ from twisted.python import log
 import sys
 import os
 import json
+import argparse
 
 class PortmapServerProtocol(protocol.Protocol):
 
@@ -21,10 +22,15 @@ class PortmapServerProtocol(protocol.Protocol):
             return self.transport.loseConnection()
         shost = ip_to_bin(self.transport.getPeer().host)
         sport = int_to_bin(self.transport.getPeer().port)
-        forward_host_info = forward.get(str(self.transport.getHost().port),{'host':self.transport.getHost().host,
-                                                                       'port':self.transport.getHost().port})
-        dhost = ip_to_bin(forward_host_info['host'])
-        dport = int_to_bin(forward_host_info['port'])
+        forward_host_info = forward.get(str(self.transport.getHost().port))
+        if forward_host_info is None:
+            return self.connectionLost()
+        forward_host_info = forward_host_info.split(':')
+        if len(forward_host_info) == 2:
+            dhost = ip_to_bin(forward_host_info[0])
+            dport = int_to_bin(forward_host_info[1])
+        else:
+            return self.connectionLost()
         print '%s:%d connecting'%(self.transport.getPeer().host,self.transport.getPeer().port)
         self.tunnel_flag = shost + sport + dhost + dport
         forward_server_factory = TunFactory(forward=True, portmap_server=self)
@@ -44,7 +50,6 @@ class PortmapServerProtocol(protocol.Protocol):
         self.buffer += data
 
     def SendData(self, data):
-        #print 'forward server:send data length %d'%len(data)
         self.transport.write(data)
 
     def connectionLost(self, reason):
@@ -80,7 +85,6 @@ class TunForwardProtocol(protocol.Protocol):
         reactor.callLater(180, port.stopListening)
 
     def SendData(self, data):
-        #print 'tunnel forward server:send data length %d'%len(data)
         self.transport.write(data)
 
     def connectionLost(self, reason):
@@ -92,7 +96,6 @@ class TunPro(protocol.Protocol):
         print '%s:%d connecting' % (self.transport.getPeer().host, self.transport.getPeer().port)
 
     def SendData(self, data):
-        #print 'tunnel server:send data length %d'%len(data)
         self.transport.write(data)
 
     def dataReceived(self, data):
@@ -130,9 +133,6 @@ class TunFactory(protocol.Factory):
 def ip_to_bin(ip):
     return ''.join([chr(int(i)) for i in ip.split('.')])
 
-def bin_to_ip(bstr):
-    return '.'.join([int(ord(i)) for i in list(bstr)])
-
 def int_to_bin(n):
     n = int(n)
     if n <= 256:
@@ -140,38 +140,41 @@ def int_to_bin(n):
     else:
         return chr(n/256) + chr(n%256)
 
-def bin_to_int(bstr):
-    l = len(bstr)
-    if l == 1:
-        return ord(bstr)
-    else:
-        return ord(bstr[0])*256**(l-1) + bin_to_int(bstr[1::])
-
-def main():
-    reactor.listenTCP(server_port,TunFactory())
+def start(server_ip, server_port, forward):
+    reactor.listenTCP(server_port, TunFactory(), interface=server_ip)
     for listenport in forward.keys():
-        reactor.listenTCP(int(listenport), ForwardServerFactory())
+        reactor.listenTCP(int(listenport), ForwardServerFactory(), interface=server_ip)
     reactor.run()
+
+def main(deamon=False, server_ip='0.0.0.0', server_port=12300, forward_config='',port_pools='', logfile='/var/log/portmap_server.log'):
+    global port_pool,forward
+    port_pools = port_pools.split('-')
+    port_pool = xrange(int(port_pools[0]), int(port_pools[1])+1)
+    forward = json.load(open(forward_config,'r'))
+    if deamon:
+        p = os.fork()
+        if p == 0:
+            log.startLogging(open(logfile, 'a+'))
+            start(server_ip, server_port, forward)
+    else:
+        log.startLogging(sys.stdout)
+        start(server_ip, server_port, forward)
 
 if __name__ == '__main__':
     servers = {}
     tunnel = [None]
-    deamon = True if '-d' in sys.argv else False
-    config = sys.argv[sys.argv.index('-c')+1]
-    if deamon:
-        p = os.fork()
-        log.startLogging(open('/home/lieh/forward.log','a+'))
+    forward = {}
+    port_pool = xrange(15000, 20000)
+    parser = argparse.ArgumentParser(description='Passive portmap server')
+    parser.add_argument('--listen-ip', default='0.0.0.0', help='listen ip, defalut 0.0.0.0')
+    parser.add_argument('--listen-port', type=int, default=12300, help='listen port, defalut 12300')
+    parser.add_argument('--logfile', default='/var/log/portmap_server.log', help='log file path, default /var/log/portmap_server.log')
+    parser.add_argument('--forward-config', help='forward config')
+    parser.add_argument('--deamon', action='store_true', help='starting in deamon')
+    parser.add_argument('--port_pool', default='15000-20000', help='port pool, default 15000-20000')
+    args = parser.parse_args()
+    if args.forward_config == None:
+        parser.print_help()
     else:
-        p = os.getpid()
-        log.startLogging(sys.stdout)
-    if os.path.exists(config):
-        cfg = json.load(open(config,'r'))
-    else:
-        print 'can\'t found config file'
-        sys.exit(1)
-    server_ip = cfg['server_ip']
-    server_port = int(cfg['server_port'])
-    forward = cfg["forward"]
-    port_pool = xrange(int(cfg['port_start']),int(cfg['port_end']))
-    if (deamon is False) or (p == 0):
-        main()
+        main(deamon=args.deamon, server_ip=args.listen_ip, server_port=args.listen_port, logfile=args.logfile, port_pools=args.port_pool, forward_config=args.forward_config)
+
