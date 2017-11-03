@@ -82,9 +82,11 @@ class TunnelForwardClientProtocol(protocol.Protocol):
             self.SendData(self.portmap_client.buffer)
             self.portmap_client.buffer = ''
         self.portmap_client.dataReceived = self.SendData
+        self.alive = False
 
     def SendData(self, data):
         #print 'tunnel forward client:send data length %d'%len(data)
+        self.alive = True
         self.transport.write(data)
 
     def connectionLost(self, reason):
@@ -101,7 +103,16 @@ class TunClientFactory(protocol.ReconnectingClientFactory):
         self.maxDelay = 600
 
     def buildProtocol(self, addr):
+        reactor.callleter(300, self.CheckAlive())
         return self.protocol
+
+    def CheckAlive(self):
+        if self.protocol.alive is False:
+            self.protocol.transport.loseConnection()
+        else:
+            self.protocol.alive = False
+            reactor.callleter(300,self.CheckAlive())
+
 
     def clientConnectionLost(self, connector, unused_reason):
         if self.forward is False:
